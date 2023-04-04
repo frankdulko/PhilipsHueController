@@ -1,41 +1,48 @@
-/* Hue color temperature control example for ArduinoHttpClient library
+/*
+    Philips Hue Controller
+    Frank Dulko
 
-   Uses ArduinoHttpClient library to control Philips Hue
-   For more on Hue developer API see http://developer.meethue.com
+    Takes three analog inputs as red, green, blue values, and converts
+    the color to HSL before sending to Philips light.
 
-  To control a light, the Hue expects a HTTP PUT request to:
+    Values are sent when pus hbutton is released. Uses AceButton library
+    to manage button.
 
-  http://hue.hub.address/api/hueUserName/lights/lightNumber/state
+    Uses single neopixel to preview color.
 
-  The body of the PUT request looks like this:
-  {"ct": value}  where value ranges from 153 - 500
-
-  ct is in the mired scale, which is 1000000/degrees Kelvin
-
-  This example  shows how to concatenate Strings to assemble the
-  PUT request and the body of the request.
-
-  note: WiFi SSID and password are stored in arduino_secrets.h file.
-  If it is not present, add a new tab, call it "arduino_secrets.h" 
-  and add the following defines, and change to your own values:
-
-  #define SECRET_SSID "ssid"    
-  #define SECRET_PASS "password"
-
-   modified 1 Mar 2022
-   by Tom Igoe (tigoe) from HueBlink example
+    Uses switch to turn the philips light on and off.
 */
 
 #include <SPI.h>
-
-//#include <WiFi101.h>  // for MKR1000
+#include <Adafruit_NeoPixel.h>
 #include <WiFiNINA.h>   // for Nano 33 IoT, MKR1010
 #include <ArduinoHttpClient.h>
 #include "arduino_secrets.h"
+#include <AceButton.h>
+using namespace ace_button;
+
+#define RPIN A0
+#define GPIN A1
+#define BPIN A2
+#define BRI_PIN A3
+#define PIXEL_PIN 2
+#define NUMPIXELS 1
+#define BUTTON_PIN 3
+#define SWITCH_PIN 4
+#define ON 1
+#define OFF 0
+
+AceButton button(BUTTON_PIN);
+Adafruit_NeoPixel pixels(NUMPIXELS, PIXEL_PIN, NEO_GRB + NEO_KHZ800);
+
+void handleEvent(AceButton*, uint8_t, uint8_t);
+
+int r, g, b, bri, switchState, lastSwitchState, h, s, l;
+float hue, sat, lum;
 
 int status = WL_IDLE_STATUS;      // the Wifi radio's status
-char hueHubIP[] = "192.168.0.4";  // IP address of the HUE bridge
-String hueUserName = "yourhuehubusername"; // hue bridge username
+char hueHubIP[] = "172.22.151.226";  // IP address of the HUE bridge
+String hueUserName = "HUR8ubtDPPVmSWzVIciwT-sbL8eX3ROFF-E77ZP5"; // hue bridge username
 
 // make a wifi instance and a HttpClient instance:
 WiFiClient wifi;
@@ -44,15 +51,12 @@ HttpClient httpClient = HttpClient(wifi, hueHubIP);
 char ssid[] = SECRET_SSID;
 char pass[] = SECRET_PASS;
 
-int colorTemp = 2000; // color temperature to set the light to
-int increment = 100;  // increment of CT change
-
 void setup() {
   //Initialize serial and wait for port to open:
   Serial.begin(9600);
-  while (!Serial); // wait for serial port to connect.
+  if (!Serial); delay(3000);// wait for serial port to connect.
 
-  // attempt to connect to Wifi network:
+  //  //attempt to connect to Wifi network:
   while ( status != WL_CONNECTED) {
     Serial.print("Attempting to connect to WPA SSID: ");
     Serial.println(ssid);
@@ -65,24 +69,106 @@ void setup() {
   Serial.print("You're connected to the network IP = ");
   IPAddress ip = WiFi.localIP();
   Serial.println(ip);
+
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  pinMode(SWITCH_PIN, INPUT_PULLUP);
+  button.setEventHandler(handleEvent);
+
+  //Set up initial state
+  switchState = digitalRead(SWITCH_PIN);
+  lastSwitchState = switchState;
+
+  String state = switchState == ON ? "true" : "false";
+  pixels.begin();
+  pixels.setBrightness(254);
+
+  getRGB();
+  pixels.setPixelColor(0, pixels.Color(r, g, b));
+  pixels.show();
+
+  RGBtoHSL(r, g, b);
+  
+  String cmd[4] = {"on", "hue", "bri", "sat"};
+  String values[4] = {state, String(h), String(l), String(s)};
+  sendRequest(3, cmd, values);
+  ////////////////////////
 }
 
 void loop() {
-  // add an increment to the color temperature:
-  colorTemp += increment;
-  Serial.println("Color temp: " + String(colorTemp));
-  // convert color temp to mired value:
-  String mired = String(1000000 / colorTemp);
-  Serial.println("mired: " + mired);
-  // send the change request:
-  sendRequest(3, "ct", mired);
-  // keep colorTemp bounded between 2000 and 6500:
-  if (colorTemp >= 6500 || colorTemp <= 2000) {
-    increment = -increment;
-  }
+  button.check();
+
+  handleSwitch();
+
+  pixels.clear();
+
+  getRGB();
+
+  pixels.setPixelColor(0, pixels.Color(r, g, b));
+
+  pixels.show();
+
+  RGBtoHSL(r, g, b);
 }
 
-void sendRequest(int light, String cmd, String value) {
+void getRGB() {
+  r = analogRead(RPIN);
+  g = analogRead(GPIN);
+  b = analogRead(BPIN);
+
+  r = map(r, 0, 1023, 0, 254);
+  g = map(g, 0, 1023, 0, 254);
+  b = map(b, 0, 1023, 0, 254);
+}
+
+void RGBtoHSL(int r, int g, int b) {
+  float rf = float(r) / 254;
+  float gf = float(g) / 254;
+  float bf = float(b) / 254;
+  float minimum = min(min(rf, gf), bf);
+  float maximum = max(max(rf, gf), bf);
+
+  lum = 0.5 * (maximum + minimum);
+
+  if (lum < 1) {
+    sat = (maximum - minimum) / (1 - abs(2 * lum - 1));
+  }
+  else if (lum == 1) {
+    sat = 0;
+  }
+
+
+  lum *= 100;
+  lum = map(lum, 0, 100, 0, 25400);
+  lum /= 100;
+  l = round(lum);
+
+  sat *= 100;
+  sat = map(sat, 0, 100, 0, 25400);
+  sat /= 100;
+  s = round(sat);
+
+  if (minimum == maximum) {
+    hue = 0;
+  }
+
+  if (maximum == rf) {
+    hue = (gf - bf) / (maximum - minimum);
+  }
+  else if (maximum == gf) {
+    hue = 2 + (bf - rf) / (maximum - minimum);
+  }
+  else {
+    hue = 4 + (rf - gf) / (maximum - minimum);
+  }
+
+  hue = hue * 60;
+  if (hue < 0) hue = hue + 360;
+
+  h = round(hue);
+  h = map(h, 0, 360, 0, 65535);
+}
+
+void sendRequest(int light, String cmd[4], String value[4]) {
   // make a String for the HTTP request path:
   String request = "/api/" + hueUserName;
   request += "/lights/";
@@ -91,11 +177,19 @@ void sendRequest(int light, String cmd, String value) {
 
   String contentType = "application/json";
 
+  String hueCmd = "{";
   // make a string for the JSON command:
-  String hueCmd = "{\"" + cmd;
-  hueCmd += "\":";
-  hueCmd += value;
+  for (int i = 0; i < 4; i++) {
+    hueCmd += "\"";
+    hueCmd += cmd[i];
+    hueCmd += "\":";
+    hueCmd += value[i];
+    if (i < 3) {
+      hueCmd += ",";
+    }
+  }
   hueCmd += "}";
+
   // see what you assembled to send:
   Serial.print("PUT request to server: ");
   Serial.println(request);
@@ -108,10 +202,41 @@ void sendRequest(int light, String cmd, String value) {
   int statusCode = httpClient.responseStatusCode();
   String response = httpClient.responseBody();
 
-  Serial.println(hueCmd);
   Serial.print("Status code from server: ");
   Serial.println(statusCode);
   Serial.print("Server response: ");
   Serial.println(response);
   Serial.println();
+}
+
+void handleEvent(AceButton* /* button */, uint8_t eventType,
+                 uint8_t /* buttonState */) {
+  switch (eventType) {
+    case AceButton::kEventPressed:
+      break;
+    case AceButton::kEventReleased:
+      Serial.println("Button Released");
+      String cmd[4] = {"on", "hue", "bri", "sat"};
+      String values[4] = {"true", String(h), String(l), String(s)};
+      sendRequest(3, cmd, values);
+      break;
+  }
+}
+
+void handleSwitch() {
+  lastSwitchState = switchState;
+  switchState = digitalRead(SWITCH_PIN);
+
+  if (lastSwitchState != switchState) {
+    if (switchState == ON) {
+      String cmd[4] = {"on", "hue", "bri", "sat"};
+      String values[4] = {"true", String(h), String(l), String(s)};
+      sendRequest(3, cmd, values);
+    }
+    else {
+      String cmd[4] = {"on", "hue", "bri", "sat"};
+      String values[4] = {"false", String(h), String(l), String(s)};
+      sendRequest(3, cmd, values);
+    }
+  }
 }
