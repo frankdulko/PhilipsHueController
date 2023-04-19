@@ -87,7 +87,7 @@ void setup() {
   pixels.show();
 
   RGBtoHSL(r, g, b);
-  
+
   String cmd[4] = {"on", "hue", "bri", "sat"};
   String values[4] = {state, String(h), String(l), String(s)};
   sendRequest(3, cmd, values);
@@ -115,9 +115,9 @@ void getRGB() {
   g = analogRead(GPIN);
   b = analogRead(BPIN);
 
-  r = map(r, 0, 1023, 0, 254);
-  g = map(g, 0, 1023, 0, 254);
-  b = map(b, 0, 1023, 0, 254);
+  r = map(r, 0, 1023, 254, 0);
+  g = map(g, 0, 1023, 254, 0);
+  b = map(b, 0, 1023, 254, 0);
 }
 
 void RGBtoHSL(int r, int g, int b) {
